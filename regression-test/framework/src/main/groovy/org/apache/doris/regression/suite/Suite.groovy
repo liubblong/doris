@@ -887,24 +887,26 @@ class Suite implements GroovyInterceptable {
             if (arg instanceof PreparedStatement) {
                 if (tag.contains("hive_docker")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveDockerConnection(hivePrefix),  (PreparedStatement) arg)
-                }else if (tag.contains("hive_remote")) {
+                } else if (tag.contains("hive_remote")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveRemoteConnection(),  (PreparedStatement) arg)
                 } else if (tag.contains("arrow_flight_sql") || context.useArrowFlightSql()) {
                     tupleResult = JdbcUtils.executeToStringList(context.getArrowFlightSqlConnection(), (PreparedStatement) arg)
-                }
-                else{
+                } else if (tag.contains("target_sql")) {
+                    tupleResult = JdbcUtils.executeToStringList(context.getTargetConnection(this), (PreparedStatement) arg)
+                } else {
                     tupleResult = JdbcUtils.executeToStringList(context.getConnection(),  (PreparedStatement) arg)
                 }
             } else {
                 if (tag.contains("hive_docker")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveDockerConnection(hivePrefix), (String) arg)
-                }else if (tag.contains("hive_remote")) {
+                } else if (tag.contains("hive_remote")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveRemoteConnection(), (String) arg)
                 } else if (tag.contains("arrow_flight_sql") || context.useArrowFlightSql()) {
                     tupleResult = JdbcUtils.executeToStringList(context.getArrowFlightSqlConnection(),
                             (String) ("USE ${context.dbName};" + (String) arg))
-                }
-                else{
+                } else if (tag.contains("target_sql")) {
+                    tupleResult = JdbcUtils.executeToStringList(context.getTargetConnection(this), (String) arg)
+                } else {
                     tupleResult = JdbcUtils.executeToStringList(context.getConnection(),  (String) arg)
                 }
             }
@@ -930,24 +932,26 @@ class Suite implements GroovyInterceptable {
             if (arg instanceof PreparedStatement) {
                 if (tag.contains("hive_docker")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveDockerConnection(hivePrefix),  (PreparedStatement) arg)
-                }else if (tag.contains("hive_remote")) {
+                } else if (tag.contains("hive_remote")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveRemoteConnection(),  (PreparedStatement) arg)
                 } else if (tag.contains("arrow_flight_sql") || context.useArrowFlightSql()) {
                     tupleResult = JdbcUtils.executeToStringList(context.getArrowFlightSqlConnection(), (PreparedStatement) arg)
-                }
-                else{
+                } else if (tag.contains("target_sql")) {
+                    tupleResult = JdbcUtils.executeToStringList(context.getTargetConnection(this), (PreparedStatement) arg)
+                } else {
                     tupleResult = JdbcUtils.executeToStringList(context.getConnection(),  (PreparedStatement) arg)
                 }
             } else {
                 if (tag.contains("hive_docker")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveDockerConnection(hivePrefix), (String) arg)
-                }else if (tag.contains("hive_remote")) {
+                } else if (tag.contains("hive_remote")) {
                     tupleResult = JdbcUtils.executeToStringList(context.getHiveRemoteConnection(), (String) arg)
                 } else if (tag.contains("arrow_flight_sql") || context.useArrowFlightSql()) {
                     tupleResult = JdbcUtils.executeToStringList(context.getArrowFlightSqlConnection(),
                             (String) ("USE ${context.dbName};" + (String) arg))
-                }
-                else{
+                } else if (tag.contains("target_sql")) {
+                    tupleResult = JdbcUtils.executeToStringList(context.getTargetConnection(this), (String) arg)
+                } else {
                     tupleResult = JdbcUtils.executeToStringList(context.getConnection(),  (String) arg)
                 }
             }
@@ -1123,7 +1127,34 @@ class Suite implements GroovyInterceptable {
     }
 
     boolean enableStoragevault() {
-        return isCloudMode() && context.config.enableStorageVault;
+        if (context.config.metaServiceHttpAddress == null || context.config.metaServiceHttpAddress.isEmpty() ||
+                context.config.metaServiceHttpAddress == null || context.config.metaServiceHttpAddress.isEmpty() ||
+                    context.config.instanceId == null || context.config.instanceId.isEmpty() ||
+                        context.config.metaServiceToken == null || context.config.metaServiceToken.isEmpty()) {
+            return false;
+        }
+        def getInstanceInfo = { check_func ->
+            httpTest {
+                endpoint context.config.metaServiceHttpAddress
+                uri "/MetaService/http/get_instance?token=${context.config.metaServiceToken}&instance_id=${context.config.instanceId}"
+                op "get"
+                check check_func
+            }
+        }
+        boolean enableStorageVault = false;
+        getInstanceInfo.call() {
+            respCode, body ->
+                String respCodeValue = "${respCode}".toString();
+                if (!respCodeValue.equals("200")) {
+                    return;
+                }
+                def json = parseJson(body)
+                if (json.result.containsKey("enableStorageVault") && json.result.enableStorageVault == "true") {
+                    enableStorageVault = true;
+                }
+                
+        }
+        return enableStorageVault;
     }
 
     String getFeConfig(String key) {

@@ -1078,7 +1078,10 @@ public class InternalCatalog implements CatalogIf<Database> {
         Tablet tablet = materializedIndex.getTablet(info.getTabletId());
         Replica replica = tablet.getReplicaById(info.getReplicaId());
         Preconditions.checkNotNull(replica, info);
-        replica.updateVersionInfo(info.getVersion(), info.getDataSize(), info.getRemoteDataSize(), info.getRowCount());
+        replica.updateVersion(info.getVersion());
+        replica.setDataSize(info.getDataSize());
+        replica.setRemoteDataSize(info.getRemoteDataSize());
+        replica.setRowCount(info.getRowCount());
         replica.setBad(false);
     }
 
@@ -3565,5 +3568,13 @@ public class InternalCatalog implements CatalogIf<Database> {
     @Override
     public boolean enableAutoAnalyze() {
         return true;
+    }
+
+    public Map<String, Long> getUsedDataQuota() {
+        Map<String, Long> dbToDataSize = new TreeMap<>();
+        for (Database db : this.idToDb.values()) {
+            dbToDataSize.put(db.getFullName(), db.getUsedDataQuotaWithLock());
+        }
+        return dbToDataSize;
     }
 }
