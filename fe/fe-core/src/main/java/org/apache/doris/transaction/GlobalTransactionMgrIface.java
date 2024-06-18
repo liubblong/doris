@@ -89,6 +89,9 @@ public interface GlobalTransactionMgrIface extends Writable {
             List<TabletCommitInfo> tabletCommitInfos, long timeoutMillis)
             throws UserException;
 
+    public boolean commitAndPublishTransaction(DatabaseIf db, long transactionId,
+            List<SubTransactionState> subTransactionStates, long timeoutMillis) throws UserException;
+
     public boolean commitAndPublishTransaction(DatabaseIf db, List<Table> tableList, long transactionId,
             List<TabletCommitInfo> tabletCommitInfos, long timeoutMillis,
             TxnCommitAttachment txnCommitAttachment)
@@ -131,7 +134,9 @@ public interface GlobalTransactionMgrIface extends Writable {
 
     public void updateDatabaseUsedQuotaData(long dbId, long usedQuotaDataBytes) throws AnalysisException;
 
-    public void abortTxnWhenCoordinateBeDown(String coordinateHost, int limit);
+    public void abortTxnWhenCoordinateBeRestart(long coordinateBeId, String coordinateHost, long beStartTime);
+
+    public void abortTxnWhenCoordinateBeDown(long coordinateBeId, String coordinateHost, int limit);
 
     public TransactionStatus getLabelState(long dbId, String label) throws AnalysisException;
 
@@ -188,4 +193,8 @@ public interface GlobalTransactionMgrIface extends Writable {
     public void replayBatchRemoveTransactionV2(BatchRemoveTransactionsOperationV2 operation) throws Exception;
 
     public void afterCommitTxnResp(CommitTxnResponse commitTxnResponse);
+
+    public void addSubTransaction(long dbId, long transactionId, long subTransactionId);
+
+    public void removeSubTransaction(long dbId, long subTransactionId);
 }

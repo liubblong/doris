@@ -59,6 +59,7 @@ import org.apache.doris.planner.OlapTableSink;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.SqlModeHelper;
 import org.apache.doris.rewrite.ExprRewriter;
+import org.apache.doris.service.ExecuteEnv;
 import org.apache.doris.service.FrontendOptions;
 import org.apache.doris.thrift.TQueryOptions;
 import org.apache.doris.thrift.TUniqueId;
@@ -174,6 +175,17 @@ public class NativeInsertStmt extends InsertStmt {
         InsertType(String labePrefix) {
             this.labePrefix = labePrefix;
         }
+    }
+
+    public NativeInsertStmt(NativeInsertStmt other) {
+        super(other.label, null, null);
+        this.tblName = other.tblName;
+        this.targetPartitionNames = other.targetPartitionNames;
+        this.label = other.label;
+        this.queryStmt = other.queryStmt;
+        this.planHints = other.planHints;
+        this.targetColumnNames = other.targetColumnNames;
+        this.isValuesOrConstantSelect = other.isValuesOrConstantSelect;
     }
 
     public NativeInsertStmt(InsertTarget target, String label, List<String> cols, InsertSource source,
@@ -395,7 +407,9 @@ public class NativeInsertStmt extends InsertStmt {
                 LoadJobSourceType sourceType = LoadJobSourceType.INSERT_STREAMING;
                 transactionId = Env.getCurrentGlobalTransactionMgr().beginTransaction(db.getId(),
                         Lists.newArrayList(targetTable.getId()), label.getLabelName(),
-                        new TxnCoordinator(TxnSourceType.FE, FrontendOptions.getLocalHostAddress()),
+                        new TxnCoordinator(TxnSourceType.FE, 0,
+                                FrontendOptions.getLocalHostAddress(),
+                                ExecuteEnv.getInstance().getStartupTime()),
                         sourceType, timeoutSecond);
             }
             isTransactionBegin = true;
@@ -579,7 +593,8 @@ public class NativeInsertStmt extends InsertStmt {
             }
             // hll column must in mentionedColumns
             for (Column col : targetTable.getBaseSchema()) {
-                if (col.getType().isObjectStored() && !mentionedColumns.contains(col.getName())) {
+                if (col.getType().isObjectStored() && !col.hasDefaultValue()
+                        && !mentionedColumns.contains(col.getName())) {
                     throw new AnalysisException(
                             "object-stored column " + col.getName() + " must in insert into columns");
                 }
@@ -1161,7 +1176,7 @@ public class NativeInsertStmt extends InsertStmt {
 
     @Override
     public RedirectStatus getRedirectStatus() {
-        if (isExplain() || isGroupCommit()) {
+        if (isExplain() || isGroupCommit() || (ConnectContext.get() != null && ConnectContext.get().isTxnModel())) {
             return RedirectStatus.NO_FORWARD;
         } else {
             return RedirectStatus.FORWARD_WITH_SYNC;

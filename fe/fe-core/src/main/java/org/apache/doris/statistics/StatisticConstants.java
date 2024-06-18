@@ -31,7 +31,8 @@ import java.util.concurrent.TimeUnit;
 
 public class StatisticConstants {
 
-    public static final String STATISTIC_TBL_NAME = "column_statistics";
+    public static final String TABLE_STATISTIC_TBL_NAME = "column_statistics";
+    public static final String PARTITION_STATISTIC_TBL_NAME = "partition_statistics";
     public static final String HISTOGRAM_TBL_NAME = "histogram_statistics";
 
     public static final int MAX_NAME_LEN = 64;
@@ -67,7 +68,10 @@ public class StatisticConstants {
     public static final String DB_NAME = FeConstants.INTERNAL_DB_NAME;
 
     public static final String FULL_QUALIFIED_STATS_TBL_NAME = InternalCatalog.INTERNAL_CATALOG_NAME
-            + "." + FeConstants.INTERNAL_DB_NAME + "." + STATISTIC_TBL_NAME;
+            + "." + FeConstants.INTERNAL_DB_NAME + "." + TABLE_STATISTIC_TBL_NAME;
+
+    public static final String FULL_QUALIFIED_PARTITION_STATS_TBL_NAME = InternalCatalog.INTERNAL_CATALOG_NAME
+            + "." + FeConstants.INTERNAL_DB_NAME + "." + PARTITION_STATISTIC_TBL_NAME;
 
     public static final int STATISTIC_INTERNAL_TABLE_REPLICA_NUM = 3;
 
@@ -84,6 +88,7 @@ public class StatisticConstants {
 
     public static final long HUGE_TABLE_DEFAULT_SAMPLE_ROWS = 4194304;
     public static final long HUGE_TABLE_LOWER_BOUND_SIZE_IN_BYTES = 0;
+    public static final long HUGE_PARTITION_LOWER_BOUND_ROWS = 100000000L;
 
     public static final long HUGE_TABLE_AUTO_ANALYZE_INTERVAL_IN_MILLIS = TimeUnit.HOURS.toMillis(0);
 

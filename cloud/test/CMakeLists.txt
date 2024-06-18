@@ -15,6 +15,7 @@ add_executable(keys_test keys_test.cpp)
 add_executable(doris_txn_test doris_txn_test.cpp)
 
 add_executable(txn_kv_test txn_kv_test.cpp)
+set_target_properties(txn_kv_test PROPERTIES COMPILE_FLAGS "-fno-access-control")
 
 add_executable(recycler_test recycler_test.cpp)
 
@@ -30,6 +31,8 @@ add_executable(meta_service_test
 add_executable(meta_server_test meta_server_test.cpp)
 
 add_executable(rate_limiter_test rate_limiter_test.cpp)
+
+add_executable(s3_rate_limiter_test s3_rate_limiter_test.cpp)
 
 add_executable(encryption_test encryption_test.cpp)
 
@@ -63,6 +66,8 @@ target_link_libraries(meta_service_test ${TEST_LINK_LIBS})
 target_link_libraries(meta_server_test ${TEST_LINK_LIBS})
 
 target_link_libraries(rate_limiter_test ${TEST_LINK_LIBS})
+
+target_link_libraries(s3_rate_limiter_test ${TEST_LINK_LIBS})
 
 target_link_libraries(encryption_test ${TEST_LINK_LIBS})
 

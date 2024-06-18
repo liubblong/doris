@@ -35,18 +35,35 @@
 
 namespace doris::pipeline {
 
-std::filesystem::path log_dir = fmt::format("{}/pipe_tracing", getenv("LOG_DIR"));
-
 void PipelineTracerContext::record(ScheduleRecord record) {
     if (_dump_type == RecordType::None) [[unlikely]] {
         return;
     }
-    if (_datas.contains(record.query_id)) {
-        _datas[record.query_id].enqueue(record);
+
+    auto map_ptr = std::atomic_load_explicit(&_data, std::memory_order_relaxed);
+    auto it = map_ptr->find({record.query_id});
+    if (it != map_ptr->end()) {
+        it->second->enqueue(record);
     } else {
-        // dump per timeslice may cause this. lead perv records broken. that's acceptable
-        std::unique_lock<std::mutex> l(_data_lock); // add new item, may rehash
-        _datas[record.query_id].enqueue(record);
+        _update([&](QueryTracesMap& new_map) {
+            if (!new_map.contains({record.query_id})) {
+                new_map[{record.query_id}].reset(new OneQueryTraces());
+            }
+            new_map[{record.query_id}]->enqueue(record);
+        });
+    }
+}
+
+void PipelineTracerContext::_update(std::function<void(QueryTracesMap&)>&& handler) {
+    auto map_ptr = std::atomic_load_explicit(&_data, std::memory_order_relaxed);
+    while (true) {
+        auto new_map = std::make_shared<QueryTracesMap>(*map_ptr);
+        handler(*new_map);
+        if (std::atomic_compare_exchange_strong_explicit(&_data, &map_ptr, new_map,
+                                                         std::memory_order_relaxed,
+                                                         std::memory_order_relaxed)) {
+            break;
+        }
     }
 }
 
@@ -95,9 +112,8 @@ Status PipelineTracerContext::change_record_params(
 }
 
 void PipelineTracerContext::_dump_query(TUniqueId query_id) {
-    //TODO: when dump, now could append records but can't add new query. try use better grained locks.
-    std::unique_lock<std::mutex> l(_data_lock); // can't rehash
-    auto path = log_dir / fmt::format("query{}", to_string(query_id));
+    auto map_ptr = std::atomic_load_explicit(&_data, std::memory_order_relaxed);
+    auto path = _log_dir / fmt::format("query{}", to_string(query_id));
     int fd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC,
                     S_ISGID | S_ISUID | S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IWOTH | S_IROTH);
     if (fd < 0) [[unlikely]] {
@@ -107,7 +123,7 @@ void PipelineTracerContext::_dump_query(TUniqueId query_id) {
     auto writer = io::LocalFileWriter {path, fd};
 
     ScheduleRecord record;
-    while (_datas[query_id].try_dequeue(record)) {
+    while ((*map_ptr)[QueryID {query_id}]->try_dequeue(record)) {
         uint64_t v = 0;
         {
             std::unique_lock<std::mutex> l(_tg_lock);
@@ -118,12 +134,12 @@ void PipelineTracerContext::_dump_query(TUniqueId query_id) {
         THROW_IF_ERROR(writer.appendv(&text, 1));
     }
 
-    THROW_IF_ERROR(writer.finalize());
     THROW_IF_ERROR(writer.close());
 
     _last_dump_time = MonotonicSeconds();
 
-    _datas.erase(query_id);
+    _update([&](QueryTracesMap& new_map) { _data->erase(QueryID {query_id}); });
+
     {
         std::unique_lock<std::mutex> l(_tg_lock);
         _id_to_workload_group.erase(query_id);
@@ -131,10 +147,10 @@ void PipelineTracerContext::_dump_query(TUniqueId query_id) {
 }
 
 void PipelineTracerContext::_dump_timeslice() {
-    std::unique_lock<std::mutex> l(_data_lock); // can't rehash
-
+    auto new_map = std::make_shared<QueryTracesMap>();
+    new_map.swap(_data);
     //TODO: if long time, per timeslice per file
-    auto path = log_dir /
+    auto path = _log_dir /
                 fmt::format("until{}", std::chrono::steady_clock::now().time_since_epoch().count());
     int fd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC,
                     S_ISGID | S_ISUID | S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IWOTH | S_IROTH);
@@ -145,25 +161,23 @@ void PipelineTracerContext::_dump_timeslice() {
     auto writer = io::LocalFileWriter {path, fd};
 
     // dump all query traces in this time window to one file.
-    for (auto& [query_id, trace] : _datas) {
+    for (auto& [query_id, trace] : (*new_map)) {
         ScheduleRecord record;
-        while (trace.try_dequeue(record)) {
+        while (trace->try_dequeue(record)) {
             uint64_t v = 0;
             {
                 std::unique_lock<std::mutex> l(_tg_lock);
-                v = _id_to_workload_group.at(query_id);
+                v = _id_to_workload_group.at(query_id.query_id);
             }
             auto tmp_str = record.to_string(v);
             auto text = Slice {tmp_str};
             THROW_IF_ERROR(writer.appendv(&text, 1));
         }
     }
-    THROW_IF_ERROR(writer.finalize());
     THROW_IF_ERROR(writer.close());
 
     _last_dump_time = MonotonicSeconds();
 
-    _datas.clear();
     _id_to_workload_group.clear();
 }
 } // namespace doris::pipeline

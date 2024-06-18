@@ -431,7 +431,7 @@ public interface TableIf {
         MYSQL, ODBC, OLAP, SCHEMA, INLINE_VIEW, VIEW, BROKER, ELASTICSEARCH, HIVE, ICEBERG, @Deprecated HUDI, JDBC,
         TABLE_VALUED_FUNCTION, HMS_EXTERNAL_TABLE, ES_EXTERNAL_TABLE, MATERIALIZED_VIEW, JDBC_EXTERNAL_TABLE,
         ICEBERG_EXTERNAL_TABLE, TEST_EXTERNAL_TABLE, PAIMON_EXTERNAL_TABLE, MAX_COMPUTE_EXTERNAL_TABLE,
-        HUDI_EXTERNAL_TABLE, TRINO_CONNECTOR_EXTERNAL_TABLE;
+        HUDI_EXTERNAL_TABLE, TRINO_CONNECTOR_EXTERNAL_TABLE, LAKESOUl_EXTERNAL_TABLE;
 
         public String toEngineName() {
             switch (this) {
@@ -540,10 +540,6 @@ public interface TableIf {
         return getType() == TableType.OLAP || getType() == TableType.MATERIALIZED_VIEW;
     }
 
-    default long getLastUpdateTime() {
-        return -1L;
-    }
-
     default long getDataSize(boolean singleReplica) {
         // TODO: Each tableIf should impl it by itself.
         return 0;
@@ -559,5 +555,9 @@ public interface TableIf {
 
     default Set<String> getDistributionColumnNames() {
         return Sets.newHashSet();
+    }
+
+    default boolean isPartitionedTable() {
+        return false;
     }
 }

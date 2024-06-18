@@ -19,7 +19,6 @@
 
 #include "common/logging.h"
 #include "common/status.h"
-#include "exec/exec_node.h"
 #include "pipeline/dependency.h"
 #include "pipeline/exec/aggregation_sink_operator.h"
 #include "pipeline/exec/aggregation_source_operator.h"
@@ -34,11 +33,14 @@
 #include "pipeline/exec/exchange_source_operator.h"
 #include "pipeline/exec/file_scan_operator.h"
 #include "pipeline/exec/group_commit_block_sink_operator.h"
+#include "pipeline/exec/group_commit_scan_operator.h"
 #include "pipeline/exec/hashjoin_build_sink.h"
 #include "pipeline/exec/hashjoin_probe_operator.h"
 #include "pipeline/exec/hive_table_sink_operator.h"
+#include "pipeline/exec/iceberg_table_sink_operator.h"
 #include "pipeline/exec/jdbc_scan_operator.h"
 #include "pipeline/exec/jdbc_table_sink_operator.h"
+#include "pipeline/exec/memory_scratch_sink_operator.h"
 #include "pipeline/exec/meta_scan_operator.h"
 #include "pipeline/exec/multi_cast_data_stream_sink.h"
 #include "pipeline/exec/multi_cast_data_stream_source.h"
@@ -94,12 +96,22 @@ Status OperatorBase::close(RuntimeState* state) {
 
 template <typename SharedStateArg>
 std::string PipelineXLocalState<SharedStateArg>::name_suffix() const {
-    return " (id=" + std::to_string(_parent->node_id()) + ")";
+    return " (id=" + std::to_string(_parent->node_id()) + [&]() -> std::string {
+        if (_parent->nereids_id() == -1) {
+            return "";
+        }
+        return " , nereids_id=" + std::to_string(_parent->nereids_id());
+    }() + ")";
 }
 
 template <typename SharedStateArg>
 std::string PipelineXSinkLocalState<SharedStateArg>::name_suffix() {
-    return " (id=" + std::to_string(_parent->node_id()) + ")";
+    return " (id=" + std::to_string(_parent->node_id()) + [&]() -> std::string {
+        if (_parent->nereids_id() == -1) {
+            return "";
+        }
+        return " , nereids_id=" + std::to_string(_parent->nereids_id());
+    }() + ")";
 }
 
 DataDistribution DataSinkOperatorXBase::required_data_distribution() const {
@@ -138,6 +150,7 @@ std::string OperatorXBase::debug_string(RuntimeState* state, int indentation_lev
 
 Status OperatorXBase::init(const TPlanNode& tnode, RuntimeState* /*state*/) {
     std::string node_name = print_plan_node_type(tnode.node_type);
+    _nereids_id = tnode.nereids_id;
     if (!tnode.intermediate_output_tuple_id_list.empty()) {
         if (!tnode.__isset.output_tuple_id) {
             return Status::InternalError("no final output tuple id");
@@ -350,9 +363,8 @@ Status DataSinkOperatorXBase::init(const TDataSink& tsink) {
 
 Status DataSinkOperatorXBase::init(const TPlanNode& tnode, RuntimeState* state) {
     std::string op_name = print_plan_node_type(tnode.node_type);
-
+    _nereids_id = tnode.nereids_id;
     auto substr = op_name.substr(0, op_name.find("_NODE"));
-
     _name = substr + "_SINK_OPERATOR";
     return Status::OK();
 }
@@ -376,8 +388,7 @@ std::shared_ptr<BasicSharedState> DataSinkOperatorX<LocalStateType>::create_shar
         LOG(FATAL) << "should not reach here!";
         return nullptr;
     } else {
-        std::shared_ptr<BasicSharedState> ss = nullptr;
-        ss = LocalStateType::SharedStateType::create_shared();
+        auto ss = LocalStateType::SharedStateType::create_shared();
         ss->id = operator_id();
         for (auto& dest : dests_id()) {
             ss->related_op_ids.insert(dest);
@@ -418,7 +429,8 @@ Status PipelineXLocalState<SharedStateArg>::init(RuntimeState* state, LocalState
     constexpr auto is_fake_shared = std::is_same_v<SharedStateArg, FakeSharedState>;
     if constexpr (!is_fake_shared) {
         if constexpr (std::is_same_v<LocalExchangeSharedState, SharedStateArg>) {
-            _shared_state = info.le_state_map[_parent->operator_id()].first.get();
+            DCHECK(info.le_state_map.find(_parent->operator_id()) != info.le_state_map.end());
+            _shared_state = info.le_state_map.at(_parent->operator_id()).first.get();
 
             _dependency = _shared_state->get_dep_by_channel_id(info.task_idx);
             _wait_for_dependency_timer = ADD_TIMER_WITH_LEVEL(
@@ -428,8 +440,7 @@ Status PipelineXLocalState<SharedStateArg>::init(RuntimeState* state, LocalState
             _shared_state = info.shared_state->template cast<SharedStateArg>();
 
             _dependency = _shared_state->create_source_dependency(
-                    _parent->operator_id(), _parent->node_id(), _parent->get_name(),
-                    state->get_query_ctx());
+                    _parent->operator_id(), _parent->node_id(), _parent->get_name());
             _wait_for_dependency_timer = ADD_TIMER_WITH_LEVEL(
                     _runtime_profile, "WaitForDependency[" + _dependency->name() + "]Time", 1);
         }
@@ -500,13 +511,13 @@ Status PipelineXSinkLocalState<SharedState>::init(RuntimeState* state, LocalSink
     constexpr auto is_fake_shared = std::is_same_v<SharedState, FakeSharedState>;
     if constexpr (!is_fake_shared) {
         if constexpr (std::is_same_v<LocalExchangeSharedState, SharedState>) {
-            _dependency = info.le_state_map[_parent->dests_id().front()].second.get();
+            DCHECK(info.le_state_map.find(_parent->dests_id().front()) != info.le_state_map.end());
+            _dependency = info.le_state_map.at(_parent->dests_id().front()).second.get();
             _shared_state = (SharedState*)_dependency->shared_state();
         } else {
             _shared_state = info.shared_state->template cast<SharedState>();
             _dependency = _shared_state->create_sink_dependency(
-                    _parent->dests_id().front(), _parent->node_id(), _parent->get_name(),
-                    state->get_query_ctx());
+                    _parent->dests_id().front(), _parent->node_id(), _parent->get_name());
         }
         _wait_for_dependency_timer = ADD_TIMER_WITH_LEVEL(
                 _profile, "WaitForDependency[" + _dependency->name() + "]Time", 1);
@@ -586,8 +597,8 @@ template <typename Writer, typename Parent>
 Status AsyncWriterSink<Writer, Parent>::init(RuntimeState* state, LocalSinkStateInfo& info) {
     RETURN_IF_ERROR(Base::init(state, info));
     _writer.reset(new Writer(info.tsink, _output_vexpr_ctxs));
-    _async_writer_dependency = AsyncWriterDependency::create_shared(
-            _parent->operator_id(), _parent->node_id(), state->get_query_ctx());
+    _async_writer_dependency =
+            AsyncWriterDependency::create_shared(_parent->operator_id(), _parent->node_id());
     _writer->set_dependency(_async_writer_dependency.get(), _finish_dependency.get());
 
     _wait_for_dependency_timer = ADD_TIMER_WITH_LEVEL(
@@ -644,10 +655,12 @@ Status AsyncWriterSink<Writer, Parent>::close(RuntimeState* state, Status exec_s
 DECLARE_OPERATOR_X(HashJoinBuildSinkLocalState)
 DECLARE_OPERATOR_X(ResultSinkLocalState)
 DECLARE_OPERATOR_X(JdbcTableSinkLocalState)
+DECLARE_OPERATOR_X(MemoryScratchSinkLocalState)
 DECLARE_OPERATOR_X(ResultFileSinkLocalState)
 DECLARE_OPERATOR_X(OlapTableSinkLocalState)
 DECLARE_OPERATOR_X(OlapTableSinkV2LocalState)
 DECLARE_OPERATOR_X(HiveTableSinkLocalState)
+DECLARE_OPERATOR_X(IcebergTableSinkLocalState)
 DECLARE_OPERATOR_X(AnalyticSinkLocalState)
 DECLARE_OPERATOR_X(SortSinkLocalState)
 DECLARE_OPERATOR_X(SpillSortSinkLocalState)
@@ -671,6 +684,7 @@ DECLARE_OPERATOR_X(GroupCommitBlockSinkLocalState)
 #define DECLARE_OPERATOR_X(LOCAL_STATE) template class OperatorX<LOCAL_STATE>;
 DECLARE_OPERATOR_X(HashJoinProbeLocalState)
 DECLARE_OPERATOR_X(OlapScanLocalState)
+DECLARE_OPERATOR_X(GroupCommitLocalState)
 DECLARE_OPERATOR_X(JDBCScanLocalState)
 DECLARE_OPERATOR_X(FileScanLocalState)
 DECLARE_OPERATOR_X(EsScanLocalState)
@@ -746,5 +760,6 @@ template class AsyncWriterSink<doris::vectorized::VJdbcTableWriter, JdbcTableSin
 template class AsyncWriterSink<doris::vectorized::VTabletWriter, OlapTableSinkOperatorX>;
 template class AsyncWriterSink<doris::vectorized::VTabletWriterV2, OlapTableSinkV2OperatorX>;
 template class AsyncWriterSink<doris::vectorized::VHiveTableWriter, HiveTableSinkOperatorX>;
+template class AsyncWriterSink<doris::vectorized::VIcebergTableWriter, IcebergTableSinkOperatorX>;
 
 } // namespace doris::pipeline

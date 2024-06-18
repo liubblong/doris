@@ -130,6 +130,7 @@ iceberg_rest_uri_port=18181
 iceberg_minio_port=19001
 
 enableEsTest=true
+es_5_port=59200
 es_6_port=19200
 es_7_port=29200
 es_8_port=39200
@@ -151,3 +152,6 @@ hdfs_port=8020
 oracle_11_port=1521
 sqlserver_2022_port=1433
 clickhouse_22_port=8123
+
+// trino-connector catalog test config
+enableTrinoConnectorTest = true

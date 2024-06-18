@@ -164,7 +164,7 @@ void InvertedIndexReader::get_analyse_result(std::vector<std::string>& analyse_r
                                              bool drop_duplicates) {
     analyse_result.clear();
 
-    std::wstring field_ws = std::wstring(field_name.begin(), field_name.end());
+    std::wstring field_ws = StringUtil::string_to_wstring(field_name);
     std::unique_ptr<lucene::analysis::TokenStream> token_stream(
             analyzer->tokenStream(field_ws.c_str(), reader));
 
@@ -212,9 +212,10 @@ Status InvertedIndexReader::read_null_bitmap(InvertedIndexQueryCacheHandle* cach
 
         // ownership of null_bitmap and its deletion will be transfered to cache
         std::shared_ptr<roaring::Roaring> null_bitmap = std::make_shared<roaring::Roaring>();
-        auto null_bitmap_file_name = InvertedIndexDescriptor::get_temporary_null_bitmap_file_name();
-        if (dir->fileExists(null_bitmap_file_name.c_str())) {
-            null_bitmap_in = dir->openInput(null_bitmap_file_name.c_str());
+        const char* null_bitmap_file_name =
+                InvertedIndexDescriptor::get_temporary_null_bitmap_file_name();
+        if (dir->fileExists(null_bitmap_file_name)) {
+            null_bitmap_in = dir->openInput(null_bitmap_file_name);
             size_t null_bitmap_size = null_bitmap_in->length();
             faststring buf;
             buf.resize(null_bitmap_size);
@@ -280,6 +281,8 @@ Status InvertedIndexReader::create_index_searcher(lucene::store::Directory* dir,
     if (std::string(dir->getObjectName()) == "DorisCompoundReader") {
         static_cast<DorisCompoundReader*>(dir)->getDorisIndexInput()->setIdxFileCache(false);
     }
+    // NOTE: before mem_tracker hook becomes active, we caculate reader memory size by hand.
+    mem_tracker->consume(index_searcher_builder->get_reader_size());
     return Status::OK();
 };
 
@@ -307,8 +310,8 @@ Status FullTextIndexReader::query(OlapReaderStatistics* stats, RuntimeState* run
     SCOPED_RAW_TIMER(&stats->inverted_index_query_timer);
 
     std::string search_str = reinterpret_cast<const StringRef*>(query_value)->to_string();
-    LOG(INFO) << column_name << " begin to search the fulltext index from clucene, query_str ["
-              << search_str << "]";
+    VLOG_DEBUG << column_name << " begin to search the fulltext index from clucene, query_str ["
+               << search_str << "]";
 
     try {
         InvertedIndexQueryInfo query_info;
@@ -329,12 +332,8 @@ Status FullTextIndexReader::query(OlapReaderStatistics* stats, RuntimeState* run
                     get_parser_mode_string_from_properties(_index_meta.properties()),
                     get_parser_char_filter_map_from_properties(_index_meta.properties()));
             auto analyzer = create_analyzer(inverted_index_ctx.get());
-            auto lowercase = get_parser_lowercase_from_properties(_index_meta.properties());
-            if (lowercase == "true") {
-                analyzer->set_lowercase(true);
-            } else if (lowercase == "false") {
-                analyzer->set_lowercase(false);
-            }
+            setup_analyzer_lowercase(analyzer, _index_meta.properties());
+            setup_analyzer_use_stopwords(analyzer, _index_meta.properties());
             inverted_index_ctx->analyzer = analyzer.get();
             auto reader = create_reader(inverted_index_ctx.get(), search_str);
             get_analyse_result(query_info.terms, reader.get(), analyzer.get(), column_name,
@@ -354,7 +353,7 @@ Status FullTextIndexReader::query(OlapReaderStatistics* stats, RuntimeState* run
         }
 
         std::unique_ptr<lucene::search::Query> query;
-        query_info.field_name = std::wstring(column_name.begin(), column_name.end());
+        query_info.field_name = StringUtil::string_to_wstring(column_name);
 
         if (query_type == InvertedIndexQueryType::MATCH_PHRASE_QUERY ||
             query_type == InvertedIndexQueryType::MATCH_PHRASE_PREFIX_QUERY ||
@@ -423,6 +422,28 @@ InvertedIndexReaderType FullTextIndexReader::type() {
     return InvertedIndexReaderType::FULLTEXT;
 }
 
+void FullTextIndexReader::setup_analyzer_lowercase(
+        std::unique_ptr<lucene::analysis::Analyzer>& analyzer,
+        const std::map<string, string>& properties) {
+    auto lowercase = get_parser_lowercase_from_properties(properties);
+    if (lowercase == INVERTED_INDEX_PARSER_TRUE) {
+        analyzer->set_lowercase(true);
+    } else if (lowercase == INVERTED_INDEX_PARSER_FALSE) {
+        analyzer->set_lowercase(false);
+    }
+}
+
+void FullTextIndexReader::setup_analyzer_use_stopwords(
+        std::unique_ptr<lucene::analysis::Analyzer>& analyzer,
+        const std::map<string, string>& properties) {
+    auto stop_words = get_parser_stopwords_from_properties(properties);
+    if (stop_words == "none") {
+        analyzer->set_stopwords(nullptr);
+    } else {
+        analyzer->set_stopwords(&lucene::analysis::standard95::stop_words);
+    }
+}
+
 Status StringTypeInvertedIndexReader::new_iterator(
         OlapReaderStatistics* stats, RuntimeState* runtime_state,
         std::unique_ptr<InvertedIndexIterator>* iterator) {
@@ -443,7 +464,7 @@ Status StringTypeInvertedIndexReader::query(OlapReaderStatistics* stats,
     // std::string search_str = reinterpret_cast<const StringRef*>(query_value)->to_string();
     VLOG_DEBUG << "begin to query the inverted index from clucene"
                << ", column_name: " << column_name << ", search_str: " << search_str;
-    std::wstring column_name_ws = std::wstring(column_name.begin(), column_name.end());
+    std::wstring column_name_ws = StringUtil::string_to_wstring(column_name);
     std::wstring search_str_ws = StringUtil::string_to_wstring(search_str);
     // unique_ptr with custom deleter
     std::unique_ptr<lucene::index::Term, void (*)(lucene::index::Term*)> term {

@@ -113,7 +113,11 @@ void FileCacheBlockDownloader::polling_download_task() {
         if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() -
                                                              task.atime)
                     .count() < hot_interval) {
-            download_blocks(task);
+            auto st = _workers->submit_func(
+                    [this, task_ = std::move(task)]() mutable { download_blocks(task_); });
+            if (!st.ok()) {
+                LOG(WARNING) << "submit download blocks failed: " << st;
+            }
         }
     }
 }
@@ -143,11 +147,9 @@ void FileCacheBlockDownloader::download_file_cache_block(
             return;
         }
 
-        auto fs = find_it->second->fs();
-        if (!fs) {
-            LOG(WARNING) << "failed to get fs. tablet_id=" << meta.tablet_id()
-                         << " rowset_id=" << find_it->second->rowset_id()
-                         << " resource_id=" << find_it->second->resource_id();
+        auto storage_resource = find_it->second->remote_storage_resource();
+        if (!storage_resource) {
+            LOG(WARNING) << storage_resource.error();
             return;
         }
 
@@ -167,12 +169,12 @@ void FileCacheBlockDownloader::download_file_cache_block(
         };
 
         DownloadFileMeta download_meta {
-                .path = BetaRowset::remote_segment_path(meta.tablet_id(), meta.rowset_id(),
-                                                        meta.segment_id()),
+                .path = storage_resource.value()->remote_segment_path(*find_it->second,
+                                                                      meta.segment_id()),
                 .file_size = meta.offset() + meta.size(), // To avoid trigger get file size IO
                 .offset = meta.offset(),
                 .download_size = meta.size(),
-                .file_system = std::move(fs),
+                .file_system = storage_resource.value()->fs,
                 .ctx =
                         {
                                 .is_index_data = meta.cache_type() == ::doris::FileCacheType::INDEX,
@@ -209,7 +211,8 @@ void FileCacheBlockDownloader::download_segment_file(const DownloadFileMeta& met
 
     for (size_t i = 0; i < task_num; i++) {
         size_t offset = meta.offset + i * one_single_task_size;
-        size_t size = std::min(one_single_task_size, meta.download_size - offset);
+        size_t size =
+                std::min(one_single_task_size, static_cast<size_t>(meta.download_size - offset));
         size_t bytes_read;
         // TODO(plat1ko):
         //  1. Directly append buffer data to file cache

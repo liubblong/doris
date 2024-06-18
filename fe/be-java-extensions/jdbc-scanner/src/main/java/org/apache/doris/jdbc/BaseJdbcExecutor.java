@@ -27,7 +27,6 @@ import org.apache.doris.common.jni.vec.VectorColumn;
 import org.apache.doris.common.jni.vec.VectorTable;
 import org.apache.doris.thrift.TJdbcExecutorCtorParams;
 import org.apache.doris.thrift.TJdbcOperation;
-import org.apache.doris.thrift.TOdbcTableType;
 
 import com.google.common.base.Preconditions;
 import com.zaxxer.hikari.HikariDataSource;
@@ -58,14 +57,12 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
     private static final TBinaryProtocol.Factory PROTOCOL_FACTORY = new TBinaryProtocol.Factory();
     private HikariDataSource hikariDataSource = null;
     private final byte[] hikariDataSourceLock = new byte[0];
-    private TOdbcTableType tableType;
     private JdbcDataSourceConfig config;
     private Connection conn = null;
     protected PreparedStatement preparedStatement = null;
     protected Statement stmt = null;
     protected ResultSet resultSet = null;
     protected ResultSetMetaData resultSetMetaData = null;
-    protected List<String> resultColumnTypeNames = null;
     protected List<Object[]> block = null;
     protected VectorTable outputTable = null;
     protected int batchSizeNum = 0;
@@ -79,7 +76,6 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
         } catch (TException e) {
             throw new InternalException(e.getMessage());
         }
-        tableType = request.table_type;
         this.config = new JdbcDataSourceConfig()
                 .setCatalogId(request.catalog_id)
                 .setJdbcUser(request.jdbc_user)
@@ -176,11 +172,7 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
             resultSet = ((PreparedStatement) stmt).executeQuery();
             resultSetMetaData = resultSet.getMetaData();
             int columnCount = resultSetMetaData.getColumnCount();
-            resultColumnTypeNames = new ArrayList<>(columnCount);
             block = new ArrayList<>(columnCount);
-            for (int i = 0; i < columnCount; ++i) {
-                resultColumnTypeNames.add(resultSetMetaData.getColumnClassName(i + 1));
-            }
             return columnCount;
         } catch (SQLException e) {
             throw new UdfRuntimeException("JDBC executor sql has error: ", e);
@@ -284,10 +276,6 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
         }
     }
 
-    public List<String> getResultColumnTypeNames() {
-        return resultColumnTypeNames;
-    }
-
     public int getCurBlockRows() {
         return curBlockRows;
     }
@@ -309,13 +297,13 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
         try {
             ClassLoader parent = getClass().getClassLoader();
             ClassLoader classLoader = UdfUtils.getClassLoader(config.getJdbcDriverUrl(), parent);
+            Thread.currentThread().setContextClassLoader(classLoader);
             hikariDataSource = JdbcDataSource.getDataSource().getSource(hikariDataSourceKey);
             if (hikariDataSource == null) {
                 synchronized (hikariDataSourceLock) {
                     hikariDataSource = JdbcDataSource.getDataSource().getSource(hikariDataSourceKey);
                     if (hikariDataSource == null) {
                         long start = System.currentTimeMillis();
-                        Thread.currentThread().setContextClassLoader(classLoader);
                         HikariDataSource ds = new HikariDataSource();
                         ds.setDriverClassName(config.getJdbcDriverClass());
                         ds.setJdbcUrl(SecurityChecker.getInstance().getSafeJdbcUrl(config.getJdbcUrl()));
@@ -433,7 +421,7 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
 
     private void insertColumn(int rowIdx, int colIdx, VectorColumn column) throws SQLException {
         int parameterIndex = colIdx + 1;
-        ColumnType.Type dorisType = column.getColumnTyp();
+        ColumnType.Type dorisType = column.getColumnPrimitiveType();
         if (column.isNullAt(rowIdx)) {
             insertNullColumn(parameterIndex, dorisType);
             return;
@@ -556,5 +544,17 @@ public abstract class BaseJdbcExecutor implements JdbcExecutor {
                 return time.toString();
             }
         }
+    }
+
+    protected String defaultByteArrayToHexString(byte[] bytes) {
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : bytes) {
+            String hex = Integer.toHexString(0xFF & b);
+            if (hex.length() == 1) {
+                hexString.append('0');
+            }
+            hexString.append(hex.toUpperCase());
+        }
+        return hexString.toString();
     }
 }

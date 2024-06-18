@@ -36,6 +36,7 @@ import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.CatalogMgr;
+import org.apache.doris.datasource.ExternalCatalog;
 import org.apache.doris.policy.Policy;
 import org.apache.doris.policy.StoragePolicy;
 import org.apache.doris.resource.Tag;
@@ -318,11 +319,9 @@ public class PropertyAnalyzer {
             } else if (key.equalsIgnoreCase(PROPERTIES_STORAGE_COOLDOWN_TIME)) {
                 DateLiteral dateLiteral = new DateLiteral(value, ScalarType.getDefaultDateType(Type.DATETIME));
                 cooldownTimestamp = dateLiteral.unixTimestamp(TimeUtils.getTimeZone());
-            } else if (!hasStoragePolicy && key.equalsIgnoreCase(PROPERTIES_STORAGE_POLICY)) {
-                if (!Strings.isNullOrEmpty(value)) {
-                    hasStoragePolicy = true;
-                    newStoragePolicy = value;
-                }
+            } else if (key.equalsIgnoreCase(PROPERTIES_STORAGE_POLICY)) {
+                hasStoragePolicy = true;
+                newStoragePolicy = value;
             }
         } // end for properties
 
@@ -352,7 +351,7 @@ public class PropertyAnalyzer {
             cooldownTimestamp = DataProperty.MAX_COOLDOWN_TIME_MS;
         }
 
-        if (hasStoragePolicy) {
+        if (hasStoragePolicy && !"".equals(newStoragePolicy)) {
             // check remote storage policy
             StoragePolicy checkedPolicy = StoragePolicy.ofCheck(newStoragePolicy);
             Policy policy = Env.getCurrentEnv().getPolicyMgr().getPolicy(checkedPolicy);
@@ -797,7 +796,8 @@ public class PropertyAnalyzer {
         }
         properties.remove(PROPERTIES_SKIP_WRITE_INDEX_ON_LOAD);
         if (value.equalsIgnoreCase("true")) {
-            return true;
+            throw new AnalysisException("Property " + PROPERTIES_SKIP_WRITE_INDEX_ON_LOAD
+                    + " is forbidden now.");
         } else if (value.equalsIgnoreCase("false")) {
             return false;
         }
@@ -1451,6 +1451,14 @@ public class PropertyAnalyzer {
                 throw new AnalysisException("failed to find class " + acClass, e);
             }
         }
+
+        if (isAlter) {
+            // The 'use_meta_cache' property can not be modified
+            if (properties.containsKey(ExternalCatalog.USE_META_CACHE)) {
+                throw new AnalysisException("Can not modify property " + ExternalCatalog.USE_META_CACHE
+                        + ". You need to create a new Catalog with the property.");
+            }
+        }
     }
 
     public Map<String, String> rewriteOlapProperties(
@@ -1464,6 +1472,9 @@ public class PropertyAnalyzer {
     }
 
     public void rewriteForceProperties(Map<String, String> properties) {
+        if (properties == null) {
+            return;
+        }
         forceProperties.forEach(property -> property.rewrite(properties));
     }
 

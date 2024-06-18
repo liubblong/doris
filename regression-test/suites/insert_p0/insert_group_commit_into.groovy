@@ -47,7 +47,7 @@ suite("insert_group_commit_into") {
                 return true
             }
             retry++
-            if (retry >= 10) {
+            if (retry >= 20) {
                 return false
             }
         }
@@ -98,6 +98,17 @@ suite("insert_group_commit_into") {
         assertTrue(!serverInfo.contains("'label':'group_commit_"))
     }
 
+    def txn_insert = { sql, expected_row_count ->
+        def stmt = prepareStatement """ ${sql}  """
+        def result = stmt.executeUpdate()
+        logger.info("insert result: " + result)
+        def serverInfo = (((StatementImpl) stmt).results).getServerInfo()
+        logger.info("result server info: " + serverInfo)
+        assertEquals(result, expected_row_count)
+        assertTrue(serverInfo.contains("'status':'PREPARE'"))
+        assertTrue(!serverInfo.contains("'label':'group_commit_"))
+    }
+
     for (item in ["legacy", "nereids"]) {
         try {
             // create table
@@ -120,12 +131,12 @@ suite("insert_group_commit_into") {
             );
             """
 
-            connect(user = context.config.jdbcUser, password = context.config.jdbcPassword, url = context.config.jdbcUrl) {
+            connect(user = context.config.jdbcUser, password = context.config.jdbcPassword, url = context.config.jdbcUrl + "&useLocalSessionState=true") {
                 sql """ set group_commit = async_mode; """
                 if (item == "nereids") {
                     sql """ set enable_nereids_dml = true; """
                     sql """ set enable_nereids_planner=true; """
-                    //sql """ set enable_fallback_to_original_planner=false; """
+                    sql """ set enable_fallback_to_original_planner=false; """
                 } else {
                     sql """ set enable_nereids_dml = false; """
                 }
@@ -213,20 +224,32 @@ suite("insert_group_commit_into") {
                 order_qt_select7 """ select name, score from ${table} order by name asc; """
                 assertTrue(getAlterTableState(), "add rollup should success")
 
-                /*if (item == "nereids") {
+                if (item == "nereids") {
                     group_commit_insert """ insert into ${table}(id, name, score) values(10 + 1, 'h', 100);  """, 1
                     group_commit_insert """ insert into ${table}(id, name, score) select 10 + 2, 'h', 100;  """, 1
                     group_commit_insert """ insert into ${table} with label test_gc_""" + System.currentTimeMillis() + """ (id, name, score) values(13, 'h', 100);  """, 1
                     getRowCount(23)
-                } else {*/
+                } else {
                     none_group_commit_insert """ insert into ${table}(id, name, score) values(10 + 1, 'h', 100);  """, 1
                     none_group_commit_insert """ insert into ${table}(id, name, score) select 10 + 2, 'h', 100;  """, 1
                     none_group_commit_insert """ insert into ${table} with label test_gc_""" + System.currentTimeMillis() + """ (id, name, score) values(13, 'h', 100);  """, 1
-                //}
+                }
 
                 def rowCount = sql "select count(*) from ${table}"
                 logger.info("row count: " + rowCount)
                 assertEquals(23, rowCount[0][0])
+
+                // txn insert
+                def stmt = prepareStatement """ begin  """
+                stmt.executeUpdate()
+                txn_insert """ insert into ${table}(id, name, score) values(20, 'i', 101);  """, 1
+                txn_insert """ insert into ${table}(id, name, score) values(21, 'j', 102);  """, 1
+                stmt = prepareStatement """ commit  """
+                stmt.executeUpdate()
+
+                rowCount = sql "select count(*) from ${table}"
+                logger.info("row count: " + rowCount)
+                assertEquals(rowCount[0][0], 25)
             }
         } finally {
             // try_sql("DROP TABLE ${table}")
@@ -317,7 +340,7 @@ suite("insert_group_commit_into") {
                 if (item == "nereids") {
                     sql """ set enable_nereids_dml = true; """
                     sql """ set enable_nereids_planner=true; """
-                    //sql """ set enable_fallback_to_original_planner=false; """
+                    sql """ set enable_fallback_to_original_planner=false; """
                 } else {
                     sql """ set enable_nereids_dml = false; """
                 }
@@ -384,7 +407,7 @@ suite("insert_group_commit_into") {
                 if (item == "nereids") {
                     sql """ set enable_nereids_dml = true; """
                     sql """ set enable_nereids_planner=true; """
-                    //sql """ set enable_fallback_to_original_planner=false; """
+                    sql """ set enable_fallback_to_original_planner=false; """
                 } else {
                     sql """ set enable_nereids_dml = false; """
                 }

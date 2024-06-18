@@ -68,7 +68,7 @@ statementBase
     | CREATE (EXTERNAL)? TABLE (IF NOT EXISTS)? name=multipartIdentifier
       LIKE existedTable=multipartIdentifier
       (WITH ROLLUP (rollupNames=identifierList)?)?           #createTableLike
-    | explain? INSERT (INTO | OVERWRITE TABLE)
+    | explain? cte? INSERT (INTO | OVERWRITE TABLE)
         (tableName=multipartIdentifier | DORIS_INTERNAL_TABLE_ID LEFT_PAREN tableId=INTEGER_VALUE RIGHT_PAREN)
         partitionSpec?  // partition define
         (WITH LABEL labelName=identifier)? cols=identifierList?  // label and columns define
@@ -101,7 +101,7 @@ statementBase
         (REFRESH refreshMethod? refreshTrigger?)?
         ((DUPLICATE)? KEY keys=identifierList)?
         (COMMENT STRING_LITERAL)?
-        (PARTITION BY LEFT_PAREN partitionKey = identifier RIGHT_PAREN)?
+        (PARTITION BY LEFT_PAREN mvPartition RIGHT_PAREN)?
         (DISTRIBUTED BY (HASH hashKeys=identifierList | RANDOM) (BUCKETS (INTEGER_VALUE | AUTO))?)?
         propertyClause?
         AS query                                                        #createMTMV
@@ -119,6 +119,7 @@ statementBase
     | ALTER TABLE table=multipartIdentifier
         DROP CONSTRAINT constraintName=errorCapturingIdentifier           #dropConstraint
     | SHOW CONSTRAINTS FROM table=multipartIdentifier                     #showConstraint
+    | DROP CATALOG RECYCLE BIN WHERE idType=STRING_LITERAL EQ id=INTEGER_VALUE #dropCatalogRecycleBin
     | unsupportedStatement                                                #unsupported
     ;
 
@@ -215,6 +216,7 @@ buildMode
 refreshTrigger
     : ON MANUAL
     | ON SCHEDULE refreshSchedule
+    | ON COMMIT
     ;
 
 refreshSchedule
@@ -223,6 +225,11 @@ refreshSchedule
 
 refreshMethod
     : COMPLETE | AUTO
+    ;
+
+mvPartition
+    : partitionKey = identifier
+    | partitionExpr = functionCallExpression
     ;
 
 identifierOrStringLiteral
@@ -377,7 +384,7 @@ columnAliases
     ;
 
 selectClause
-    : SELECT selectHint? DISTINCT? selectColumnClause
+    : SELECT selectHint? (DISTINCT|ALL)? selectColumnClause
     ;
 
 selectColumnClause
@@ -524,7 +531,7 @@ optScanParams
 
 relationPrimary
     : multipartIdentifier optScanParams? materializedViewName? specifiedPartition?
-       tabletList? tableAlias sample? relationHint? lateralView*           #tableName
+       tabletList? tableAlias sample? tableSnapshot? relationHint? lateralView*           #tableName
     | LEFT_PAREN query RIGHT_PAREN tableAlias lateralView*                 #aliasedQuery
     | tvfName=identifier LEFT_PAREN
       (properties=propertyItemList)?
@@ -577,10 +584,10 @@ columnDef
     : colName=identifier type=dataType
         KEY?
         (aggType=aggTypeDef)?
-        ((NOT)? NULL)?
+        ((NOT)? nullable=NULL)?
         (AUTO_INCREMENT (LEFT_PAREN autoIncInitValue=number RIGHT_PAREN)?)?
-        (DEFAULT (nullValue=NULL | INTEGER_VALUE | stringValue=STRING_LITERAL| CURRENT_DATE
-            | defaultTimestamp=CURRENT_TIMESTAMP (LEFT_PAREN defaultValuePrecision=number RIGHT_PAREN)?))?
+        (DEFAULT (nullValue=NULL | INTEGER_VALUE | DECIMAL_VALUE | stringValue=STRING_LITERAL
+           | CURRENT_DATE | defaultTimestamp=CURRENT_TIMESTAMP (LEFT_PAREN defaultValuePrecision=number RIGHT_PAREN)?))?
         (ON UPDATE CURRENT_TIMESTAMP (LEFT_PAREN onUpdateValuePrecision=number RIGHT_PAREN)?)?
         (COMMENT comment=STRING_LITERAL)?
     ;
@@ -676,6 +683,7 @@ booleanExpression
     | IS_NOT_NULL_PRED LEFT_PAREN valueExpression RIGHT_PAREN                       #is_not_null_pred
     | valueExpression predicate?                                                    #predicated
     | left=booleanExpression operator=(AND | LOGICALAND) right=booleanExpression    #logicalBinary
+    | left=booleanExpression operator=XOR right=booleanExpression                   #logicalBinary
     | left=booleanExpression operator=OR right=booleanExpression                    #logicalBinary
     | left=booleanExpression operator=DOUBLEPIPES right=booleanExpression           #doublePipes
     ;
@@ -766,7 +774,7 @@ primaryExpression
     | name=CURRENT_USER                                                                        #currentUser
     | CASE whenClause+ (ELSE elseExpression=expression)? END                                   #searchedCase
     | CASE value=expression whenClause+ (ELSE elseExpression=expression)? END                  #simpleCase
-    | name=CAST LEFT_PAREN expression AS dataType RIGHT_PAREN                                  #cast
+    | name=CAST LEFT_PAREN expression AS castDataType RIGHT_PAREN                              #cast
     | constant                                                                                 #constantDefault
     | interval                                                                                 #intervalLiteral
     | ASTERISK                                                                                 #star
@@ -774,9 +782,9 @@ primaryExpression
     | CHAR LEFT_PAREN
                 arguments+=expression (COMMA arguments+=expression)*
                 (USING charSet=identifierOrText)?
-          RIGHT_PAREN                                                                         #charFunction
-    | CONVERT LEFT_PAREN argument=expression USING charSet=identifierOrText RIGHT_PAREN       #convertCharSet
-    | CONVERT LEFT_PAREN argument=expression COMMA type=dataType RIGHT_PAREN                  #convertType
+          RIGHT_PAREN                                                                          #charFunction
+    | CONVERT LEFT_PAREN argument=expression USING charSet=identifierOrText RIGHT_PAREN        #convertCharSet
+    | CONVERT LEFT_PAREN argument=expression COMMA castDataType RIGHT_PAREN                    #convertType
     | functionCallExpression                                                                   #functionCall
     | value=primaryExpression LEFT_BRACKET index=valueExpression RIGHT_BRACKET                 #elementAt
     | value=primaryExpression LEFT_BRACKET begin=valueExpression
@@ -793,6 +801,10 @@ primaryExpression
     | primaryExpression COLLATE (identifier | STRING_LITERAL | DEFAULT)                        #collate
     ;
 
+castDataType
+    : dataType
+    |(SIGNED|UNSIGNED) (INT|INTEGER)?
+    ;
 
 functionCallExpression
     : functionIdentifier
@@ -872,6 +884,7 @@ constant
     | LEFT_BRACE (items+=constant COLON items+=constant)?
        (COMMA items+=constant COLON items+=constant)* RIGHT_BRACE                              #mapLiteral
     | LEFT_BRACE items+=constant (COMMA items+=constant)* RIGHT_BRACE                          #structLiteral
+    | PLACEHOLDER						                               #placeholder
     ;
 
 comparisonOperator
@@ -912,7 +925,7 @@ dataType
 primitiveColType:
     | type=TINYINT
     | type=SMALLINT
-    | (SIGNED | UNSIGNED)? type=(INT | INTEGER)
+    | type=(INT | INTEGER)
     | type=BIGINT
     | type=LARGEINT
     | type=BOOLEAN
@@ -963,6 +976,11 @@ sample
 sampleMethod
     : percentage=INTEGER_VALUE PERCENT                              #sampleByPercentile
     | INTEGER_VALUE ROWS                                            #sampleByRows
+    ;
+
+tableSnapshot
+    : FOR VERSION AS OF version=INTEGER_VALUE
+    | FOR TIME AS OF time=STRING_LITERAL
     ;
 
 // this rule is used for explicitly capturing wrong identifiers such as test-table, which should actually be `test-table`
@@ -1033,6 +1051,7 @@ nonReserved
     | BUILD
     | BUILTIN
     | BULK
+    | CACHE
     | CACHED
     | CALL
     | CATALOG
@@ -1045,17 +1064,21 @@ nonReserved
     | CLUSTERS
     | COLLATION
     | COLLECT
+    | COLOCATE
     | COLUMNS
     | COMMENT
     | COMMIT
     | COMMITTED
     | COMPACT
     | COMPLETE
+    | COMPRESS_TYPE
     | CONFIG
     | CONNECTION
     | CONNECTION_ID
     | CONSISTENT
+    | CONSTRAINTS
     | CONVERT
+    | CONVERT_LSC
     | COPY
     | COUNT
     | CREATION
@@ -1075,10 +1098,10 @@ nonReserved
     | DATEADD
     | DATEDIFF
     | DATETIME
-    | DATETIMEV2
-    | DATEV2
     | DATETIMEV1
+    | DATETIMEV2
     | DATEV1
+    | DATEV2
     | DAY
     | DAYS_ADD
     | DAYS_SUB
@@ -1129,6 +1152,7 @@ nonReserved
     | HISTOGRAM
     | HLL_UNION
     | HOSTNAME
+    | HOTSPOT
     | HOUR
     | HUB
     | IDENTIFIED
@@ -1137,6 +1161,8 @@ nonReserved
     | INCREMENTAL
     | INDEXES
     | INVERTED
+    | IPV4
+    | IPV6
     | IS_NOT_NULL_PRED
     | IS_NULL_PRED
     | ISNULL
@@ -1162,6 +1188,12 @@ nonReserved
     | LOGICAL
     | MANUAL
     | MAP
+    | MATCH_ALL
+    | MATCH_ANY
+    | MATCH_PHRASE
+    | MATCH_PHRASE_EDGE
+    | MATCH_PHRASE_PREFIX
+    | MATCH_REGEXP
     | MATERIALIZED
     | MAX
     | MEMO
@@ -1202,11 +1234,12 @@ nonReserved
     | PERMISSIVE
     | PHYSICAL
     | PLAN
-    | PROCESS
     | PLUGIN
     | PLUGINS
     | POLICY
+    | PRIVILEGES
     | PROC
+    | PROCESS
     | PROCESSLIST
     | PROFILE
     | PROPERTIES
@@ -1216,6 +1249,7 @@ nonReserved
     | QUERY
     | QUOTA
     | RANDOM
+    | RECENT
     | RECOVER
     | RECYCLE
     | REFRESH
@@ -1250,6 +1284,8 @@ nonReserved
     | SNAPSHOT
     | SONAME
     | SPLIT
+    | SQL
+    | STAGES
     | START
     | STARTS
     | STATS
@@ -1280,13 +1316,17 @@ nonReserved
     | TYPES
     | UNCOMMITTED
     | UNLOCK
+    | UP
     | USER
     | VALUE
     | VARCHAR
     | VARIABLES
+    | VARIANT
+    | VAULT
     | VERBOSE
     | VERSION
     | VIEW
+    | WARM
     | WARNINGS
     | WEEK
     | WORK

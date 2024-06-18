@@ -25,6 +25,7 @@
 #include "cloud/cloud_cumulative_compaction_policy.h"
 #include "cloud/cloud_tablet.h"
 #include "cloud_txn_delete_bitmap_cache.h"
+#include "io/cache/block_file_cache_factory.h"
 #include "olap/storage_engine.h"
 #include "olap/storage_policy.h"
 #include "util/threadpool.h"
@@ -71,20 +72,26 @@ public:
     ThreadPool& calc_tablet_delete_bitmap_task_thread_pool() const {
         return *_calc_tablet_delete_bitmap_task_thread_pool;
     }
+    void _check_file_cache_ttl_block_valid();
 
-    io::FileSystemSPtr get_fs_by_vault_id(const std::string& vault_id) const {
+    std::optional<StorageResource> get_storage_resource(const std::string& vault_id) const {
         if (vault_id.empty()) {
-            return latest_fs();
+            return StorageResource {latest_fs()};
         }
-        return get_filesystem(vault_id);
+
+        if (auto storage_resource = doris::get_storage_resource(vault_id); storage_resource) {
+            return storage_resource->first;
+        }
+
+        return std::nullopt;
     }
 
-    io::FileSystemSPtr latest_fs() const {
+    io::RemoteFileSystemSPtr latest_fs() const {
         std::lock_guard lock(_latest_fs_mtx);
         return _latest_fs;
     }
 
-    void set_latest_fs(const io::FileSystemSPtr& fs) {
+    void set_latest_fs(const io::RemoteFileSystemSPtr& fs) {
         std::lock_guard lock(_latest_fs_mtx);
         _latest_fs = fs;
     }
@@ -157,7 +164,7 @@ private:
 
     // FileSystem with latest shared storage info, new data will be written to this fs.
     mutable std::mutex _latest_fs_mtx;
-    io::FileSystemSPtr _latest_fs;
+    io::RemoteFileSystemSPtr _latest_fs;
 
     std::vector<scoped_refptr<Thread>> _bg_threads;
 
